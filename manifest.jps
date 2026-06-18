@@ -1,0 +1,263 @@
+type: install
+version: 1.8
+
+name: OpenClaw
+displayName: OpenClaw
+description: OpenClaw is a browser-first local gateway for launching, connecting to, and managing your OpenClaw workspace with token-based authentication and built-in update actions.
+homepage: https://docs.openclaw.ai/
+logo: https://github.com/openclaw.png
+categories:
+  - apps/dev-and-admin-tools
+
+ssl: true
+skipNodeEmails: true
+
+globals:
+  gatewayToken: oc_GMXKF2ihGVERyRr6bckMYG5-ny-4sWKD
+  gatewayPassword: pw_AdoMW61aL6on4vhK67bwtnFSFWIvQ7eI
+  publicPort: 80
+  containerPort: 18789
+  stateDir: /data/openclaw
+  openclawVersion: latest
+  runtimeImage: openclaw-node:22-bullseye-slim
+  runtimeSource: docker.io/library/node:22-bullseye-slim
+
+nodes:
+  - nodeGroup: cp
+    nodeType: docker
+    displayName: OpenClaw Docker Engine
+    image: jelastic/docker-ce:latest
+    cloudlets: 16
+    fixedCloudlets: 1
+    count: 1
+    extip: false
+    isRedeploySupport: true
+    ports:
+      - ${globals.publicPort}
+    volumes:
+      - /var/lib/docker
+      - ${globals.stateDir}
+
+onInstall:
+  - cmd[cp]: |-
+      set -eu
+
+      STATE_DIR="${globals.stateDir}"
+      PUBLIC_PORT="${globals.publicPort}"
+      CONTAINER_PORT="${globals.containerPort}"
+      OPENCLAW_VERSION="${globals.openclawVersion}"
+      RUNTIME_IMAGE="${globals.runtimeImage}"
+      RUNTIME_SOURCE="${globals.runtimeSource}"
+
+      install_helper_tools() {
+        if command -v skopeo >/dev/null 2>&1 && command -v curl >/dev/null 2>&1; then
+          return 0
+        fi
+
+        echo "Installing helper tools..."
+        if command -v yum >/dev/null 2>&1; then
+          yum install -y --skip-broken skopeo curl ca-certificates || true
+        elif command -v dnf >/dev/null 2>&1; then
+          dnf install -y --skip-broken skopeo curl ca-certificates || true
+        elif command -v apt-get >/dev/null 2>&1; then
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y skopeo curl ca-certificates
+        else
+          echo "No supported package manager found. Cannot install skopeo/curl."
+          exit 1
+        fi
+
+        command -v skopeo >/dev/null 2>&1 || { echo "skopeo is still unavailable after installation."; exit 1; }
+        command -v curl >/dev/null 2>&1 || { echo "curl is still unavailable after installation."; exit 1; }
+      }
+
+      load_runtime_image() {
+        echo "Loading Node runtime image..."
+        install_helper_tools
+        tmp_archive="$(mktemp /tmp/openclaw-runtime.XXXXXX.tar)"
+        skopeo copy --format v2s2 "docker://${RUNTIME_SOURCE}" "docker-archive:${tmp_archive}:${RUNTIME_IMAGE}"
+        docker load -i "${tmp_archive}"
+        rm -f "${tmp_archive}"
+      }
+
+      echo "Waiting for Docker Engine..."
+      for i in $(seq 1 60); do
+        if docker info >/dev/null 2>&1; then
+          break
+        fi
+        sleep 2
+      done
+      docker info >/dev/null
+
+      echo "Preparing persistent directories..."
+      mkdir -p "${STATE_DIR}/workspace" "${STATE_DIR}/devices"
+
+      load_runtime_image
+
+      echo "Writing startup script..."
+      cat > "${STATE_DIR}/start.sh" <<'EOF'
+      #!/bin/sh
+      set -eu
+
+      export OPENCLAW_CONFIG_DIR="/home/node/.openclaw"
+      export OPENCLAW_WORKSPACE_DIR="/home/node/.openclaw/workspace"
+      export OPENCLAW_GATEWAY_PORT="18789"
+      export OPENCLAW_GATEWAY_TOKEN=${globals.gatewayToken}
+      export OPENCLAW_GATEWAY_PASSWORD=${globals.gatewayPassword}
+      export OPENCLAW_VERSION="${OPENCLAW_VERSION}"
+
+      mkdir -p /home/node/.openclaw/workspace /home/node/.openclaw/devices
+
+      if ! command -v openclaw >/dev/null 2>&1; then
+        npm install -g "openclaw@${OPENCLAW_VERSION}"
+      fi
+
+      openclaw config set gateway.mode local
+      openclaw config set gateway.bind lan
+      openclaw config set gateway.auth.mode token
+      openclaw config set gateway.auth.token "${OPENCLAW_GATEWAY_TOKEN}"
+      openclaw config set gateway.controlUi.dangerouslyAllowHostHeaderOriginFallback true
+      openclaw config set gateway.trustedProxies '["127.0.0.1"]'
+
+      if [ -n "${GEMINI_API_KEY:-}" ] || [ -n "${GOOGLE_API_KEY:-}" ]; then
+        openclaw models set google/gemini-2.5-flash || true
+      elif [ -n "${OPENROUTER_API_KEY:-}" ]; then
+        openclaw models set openrouter/auto || true
+      fi
+
+      if [ -n "${OPENCLAW_GATEWAY_PASSWORD}" ]; then
+        openclaw config set gateway.auth.password "${OPENCLAW_GATEWAY_PASSWORD}" || true
+      fi
+
+      cat > /tmp/openclaw-device-approval.js <<'NODE'
+      const { execFileSync } = require("node:child_process");
+      const { setTimeout: sleep } = require("node:timers/promises");
+
+      const collectRequestIds = (value, seen = new Set()) => {
+        const ids = [];
+        const walk = (node) => {
+          if (!node || typeof node !== "object") return;
+          if (seen.has(node)) return;
+          seen.add(node);
+
+          if (Array.isArray(node)) {
+            for (const item of node) walk(item);
+            return;
+          }
+
+          const record = node;
+          if (typeof record.requestId === "string" && record.requestId.trim()) {
+            ids.push(record.requestId.trim());
+          }
+
+          for (const key of Object.keys(record)) {
+            walk(record[key]);
+          }
+        };
+
+        walk(value);
+        return [...new Set(ids)];
+      };
+
+      const main = async () => {
+        for (;;) {
+          try {
+            const stdout = execFileSync("openclaw", ["devices", "list", "--json"], {
+              encoding: "utf8",
+            }).trim();
+            if (stdout) {
+              const parsed = JSON.parse(stdout);
+              const requestId = collectRequestIds(parsed)[0];
+              if (requestId) {
+                execFileSync("openclaw", ["devices", "approve", requestId], {
+                  stdio: ["ignore", "pipe", "pipe"],
+                });
+                process.exit(0);
+              }
+            }
+          } catch (error) {
+          }
+          await sleep(1000);
+        }
+      };
+
+      main().catch((error) => {
+        console.error(error);
+        process.exit(1);
+      });
+      NODE
+      chmod 700 /tmp/openclaw-device-approval.js
+      nohup node /tmp/openclaw-device-approval.js >/tmp/openclaw-device-approval.log 2>&1 &
+
+      exec openclaw gateway run --allow-unconfigured --bind lan --auth token --token ${globals.gatewayToken} --port 18789
+      EOF
+      chmod +x "${STATE_DIR}/start.sh"
+
+      echo "Stopping old container if present..."
+      docker rm -f openclaw >/dev/null 2>&1 || true
+
+      echo "Starting OpenClaw..."
+      docker run -d \
+        --name openclaw \
+        --restart unless-stopped \
+        -u root \
+        -p "${PUBLIC_PORT}:${CONTAINER_PORT}" \
+        -v "${STATE_DIR}:/home/node/.openclaw" \
+        -e OPENCLAW_GATEWAY_TOKEN=${globals.gatewayToken} \
+        -e OPENCLAW_GATEWAY_PASSWORD=${globals.gatewayPassword} \
+        -e OPENCLAW_GATEWAY_PORT="${CONTAINER_PORT}" \
+        -e OPENCLAW_VERSION="${OPENCLAW_VERSION}" \
+        "${RUNTIME_IMAGE}" \
+        sh "/home/node/.openclaw/start.sh"
+
+      echo "Waiting for OpenClaw to respond..."
+      for i in $(seq 1 120); do
+        if curl -fsS "http://127.0.0.1:${PUBLIC_PORT}/" >/dev/null 2>&1; then
+          break
+        fi
+        sleep 2
+      done
+
+      curl -fsS "http://127.0.0.1:${PUBLIC_PORT}/" >/dev/null 2>&1 || true
+      docker ps --filter name=openclaw
+
+addons:
+  - id: update-openclaw-latest
+    name: Update OpenClaw to Latest
+    onInstall:
+      cmd [cp]: |-
+        set -eu
+        docker exec openclaw sh -lc 'npm install -g openclaw@latest'
+        docker restart openclaw
+        for i in $(seq 1 120); do
+          if docker exec openclaw sh -lc 'openclaw --version' >/dev/null 2>&1; then
+            break
+          fi
+          sleep 2
+        done
+        docker exec openclaw sh -lc 'openclaw --version' || true
+
+startPage: https://${env.domain}/?bootstrap=${fn.uuid}#token=${globals.gatewayToken}
+
+success: |
+  OpenClaw has been installed.
+
+  Access card:
+
+  Token:
+    ${globals.gatewayToken}
+
+  Password:
+    ${globals.gatewayPassword}
+
+  Keep these values somewhere safe. They are the credentials for first login and
+  for reconnecting later.
+
+  Notes:
+
+  * OpenClaw is already configured for browser-first access.
+  * The browser button opens the app directly using the saved token. The unique bootstrap URL avoids stale browser auth state.
+  * The Add-ons tab includes an "Update OpenClaw to Latest" action for future upgrades.
+  * Built-in SSL is enabled.
+  * The node does not use a public IP.
+  * Docker restart policy is set to unless-stopped.
