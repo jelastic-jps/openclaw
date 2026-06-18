@@ -13,8 +13,8 @@ ssl: true
 skipNodeEmails: true
 
 globals:
-  gatewayToken: oc_GMXKF2ihGVERyRr6bckMYG5-ny-4sWKD
-  gatewayPassword: pw_AdoMW61aL6on4vhK67bwtnFSFWIvQ7eI
+  gatewayToken: oc_${fn.uuid}
+  gatewayPassword: pw_${fn.password}
   publicPort: 80
   containerPort: 18789
   stateDir: /data/openclaw
