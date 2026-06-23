@@ -1,5 +1,5 @@
 type: install
-version: 1.9
+version: 1.10
 
 name: OpenClaw
 displayName: OpenClaw
@@ -241,25 +241,16 @@ addons:
 startPage: https://${env.domain}/?bootstrap=${fn.uuid}#token=${globals.gatewayToken}
 
 success: |
-  OpenClaw has been installed.
-
-  Access card:
-
-  Token:
-    ${globals.gatewayToken}
-
-  Password:
-    ${globals.gatewayPassword}
-
-  Keep these values somewhere safe. They are the credentials for first login and
-  for reconnecting later.
-
-  Notes:
-
-  * OpenClaw is already configured for browser-first access.
-  * The browser button opens the app directly using the saved token. The unique bootstrap URL avoids stale browser auth state.
-  * The Add-ons tab includes an "Update OpenClaw to Latest" action for future upgrades.
-  * Built-in SSL is enabled.
-  * The node does not use a public IP.
-  * Docker restart policy is set to unless-stopped.
+  <h3>OpenClaw has been installed</h3>
+  <p><a href="https://${env.domain}/?bootstrap=${fn.uuid}#token=${globals.gatewayToken}" target="_blank"><b>&#128279; Open OpenClaw</b></a></p>
+  <p><b>Token:</b></p>
+  <p><code>${globals.gatewayToken}</code></p>
+  <p><b>Password:</b></p>
+  <p><code>${globals.gatewayPassword}</code></p>
+  <p>Keep these values safe — they are the credentials for reconnecting later.</p>
+  <ul>
+  <li>Built-in SSL is enabled.</li>
+  <li>The Add-ons tab includes an "Update OpenClaw to Latest" action.</li>
+  <li>Docker restart policy is set to unless-stopped.</li>
+  </ul>
 
