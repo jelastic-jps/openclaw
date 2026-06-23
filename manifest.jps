@@ -1,5 +1,5 @@
 type: install
-version: 1.8
+version: 1.9
 
 name: OpenClaw
 displayName: OpenClaw
@@ -117,6 +117,7 @@ onInstall:
       openclaw config set gateway.auth.mode token
       openclaw config set gateway.auth.token "${OPENCLAW_GATEWAY_TOKEN}"
       openclaw config set gateway.controlUi.dangerouslyAllowHostHeaderOriginFallback true
+      openclaw config set gateway.controlUi.dangerouslyDisableDeviceAuth true
       openclaw config set gateway.trustedProxies '["127.0.0.1"]'
 
       if [ -n "${GEMINI_API_KEY:-}" ] || [ -n "${GOOGLE_API_KEY:-}" ]; then
@@ -261,3 +262,4 @@ success: |
   * Built-in SSL is enabled.
   * The node does not use a public IP.
   * Docker restart policy is set to unless-stopped.
+
